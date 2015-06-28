@@ -6,7 +6,10 @@ namespace eval fcgi {
   variable config  [dict create]
   variable clients [dict create]
 
+  variable FCGI_LISTENSOCK_FILENO 0
+  variable FCGI_HEADER_LEN  8 
   variable FCGI_VERSION 1
+
 
   #/** Values for FCGI_Header.type */#
   variable FCGI_BEGIN_REQUEST       1
@@ -21,6 +24,17 @@ namespace eval fcgi {
   variable FCGI_GET_VALUES_RESULT  10
   variable FCGI_UNKNOWN_TYPE       11
   variable FCGI_MAXTYPE            11
+  variable FCGI_MINTYPE             1
+
+  #/** Value for FCGI_Header.requestId */#
+  variable FCGI_NULL_REQUEST_ID     0
+
+  #/** Mask for FCGI_BeginRequestBody.flags */#
+  variable FCGI_KEEP_CONN        1
+  #/** Values for FCGI_BeginRequestBody.role */#
+  variable FCGI_RESPONDER        1
+  variable FCGI_AUTHORIZER       2
+  variable FCGI_FILTER           3
 
   #/** Values for FCGI_EndRequestBody.protocolStatus */#
   variable FCGI_REQUEST_COMPLETE 0
@@ -92,6 +106,14 @@ namespace eval fcgi {
     flush $sock
   }
 
+  proc send/$FCGI_UNKNOWN_TYPE {sock id type} {
+    variable FCGI_UNKNOWN_TYPE
+
+    puts "DEBUG: FCGI_UNKNOWN_TYPE = $type"
+    set data [binary format {cu a7} $type ""]
+    send $sock $id $FCGI_UNKNOWN_TYPE
+  }
+
   proc recv {sock} {
     set bytes [read $sock 8]
 
@@ -108,6 +130,13 @@ namespace eval fcgi {
 
     puts "DEBUG: recv $version $type $id $contentLength $paddingLength"
 
+    variable FCGI_MAXTYPE
+    variable FCGI_MINTYPE
+    if {$type > $FCGI_MAXTYPE || $type < $FCGI_MINTYPE} {
+      send $sock UNKNOWN_TYPE $id $type
+      return 1
+    }
+
     recv/$type $sock $id $contentData $contentLength
 
     return 1
@@ -121,8 +150,10 @@ namespace eval fcgi {
     set result [dict create]
 
     while {$skip < $size} {
-      binary scan $data "x$skip H64 H64 H64" hex1 hex2 hex3
-      puts "... hex = $hex1 $hex2 $hex3"
+
+      #-- binary scan $data "x$skip H64 H64 H64" hex1 hex2 hex3
+      #-- puts "... hex = $hex1 $hex2 $hex3"
+
       binary scan $data "x$skip cu" nameLength
       if {$nameLength & 0x80} {
         binary scan $data "x$skip Iu" nameLength
@@ -143,7 +174,7 @@ namespace eval fcgi {
 
       binary scan $data "x$skip a$nameLength a$valueLength" name value
       dict set result $name $value
-      puts "DEBUG: ... $skip < $size, $nameLength, $valueLength $name = $value"
+      #--# puts "DEBUG: ... $skip < $size, $nameLength, $valueLength $name = $value"
 
       incr skip $nameLength
       incr skip $valueLength
@@ -153,8 +184,24 @@ namespace eval fcgi {
   }
 
   proc recv/$FCGI_BEGIN_REQUEST {sock id data args} {
+    variable FCGI_RESPONDER
+    variable FCGI_AUTHORIZER
+    variable FCGI_FILTER
+
     binary scan $data {Su cu} role flags
-    puts "DEBUG: begin_request = $role, $flags"
+
+
+    if {$role == $FCGI_RESPONDER} {
+      puts "DEBUG: BEGIN_REQUEST = RESPONDER  (flags = $flags)"
+    } elseif {$role == $FCGI_AUTHORIZER} {
+      puts "DEBUG: BEGIN_REQUEST = AUTHORIZER (flags = $flags)"
+    } elseif {$role == $FCGI_FILTER} {
+      puts "DEBUG: BEGIN_REQUEST = FILTER (flags = $flags)"
+    } else {
+      puts "WARN: Unknow Request Role $role"
+    }
+
+    return 
   }
 
   proc recv/$FCGI_ABORT_REQUEST {sock id data args} {
@@ -181,6 +228,7 @@ namespace eval fcgi {
     }
   }
 
+
   proc recv/$FCGI_STDIN {sock id data size} {
     puts "DEBUG: STDIN  = $data"
 
@@ -203,6 +251,7 @@ namespace eval fcgi {
   proc send/$FCGI_STDERR {sock id data} {
     puts "DEBUG: STDERR = $data"
   }
+
 
 
   proc recv/$FCGI_GET_VALUES {sock id data args} {
@@ -230,6 +279,22 @@ return
 FastCGI Record Type
 -------------------
 
- * A discrete record: contains a meaningful unit of data all by itself.
- * A stream record: zero or more non-empty record (length!=0), plus an empty record (length=0).
+  * A discrete record: contains a meaningful unit of data all by itself.
+  * A stream record: zero or more non-empty record (length!=0), plus an empty record (length=0).
+
+
+  * FCGI_MAX_CONNS: maximum number of concurrent transport connections, e.g. "1" or "10".
+  * FCGI_MAX_REQS: maximum number of concurrent requests, e.g. "1" or "50".
+  * FCGI_MPXS_CONNS: "0" if does not multiplex connections, "1" otherwise.
+
+
+  * The `appStatus` is an application-level status code. Each role documents its usage of appStatus.
+  * The `protocolStatus` is a protocol-level status code; possible values are:
+    * FCGI_REQUEST_COMPLETE: normal end of request.
+    * FCGI_CANT_MPX_CONN: rejecting a new request. 
+      e.g. sends concurrent requests to FCGI_MAX_REQS=1.
+    * FCGI_OVERLOADED: rejecting a new request. 
+      This happens when the application runs out of some resource, e.g. database connections.
+    * FCGI_UNKNOWN_ROLE: rejecting a new request. 
+      This happens when the Web server has specified a role that is unknown to the application.
 

@@ -10,9 +10,10 @@ namespace eval FastCgiApp {
 
     puts "DEBUG: accept $sock $clientaddr:$clientport"
     
+    set count 0
     while {[fcgi::recv $sock]} {
 
-      puts ".... [info cmdcount] $sock ..."
+      puts "fcgi::recv $sock#[incr count] ..."
       # ...
     }
 
