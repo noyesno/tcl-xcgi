@@ -67,12 +67,47 @@ namespace eval fcgi {
     # TODO: check error
   }
 
-  proc accept {sock} {
+  proc listen {sock} {
     variable clients
 
     dict set clients $sock sock $sock
 
     fconfigure $sock -encoding binary -translation binary
+
+  }
+
+  proc accept {sock idvar} {
+    variable FCGI_NULL_REQUEST_ID
+    variable FCGI_UNKNOWN_TYPE
+    variable FCGI_MAXTYPE
+    variable FCGI_MINTYPE
+    variable FCGI_STDIN
+
+    while {[recv $sock record]} {
+      lassign $record version type id contentData contentLength
+
+      if {$type > $FCGI_MAXTYPE || $type < $FCGI_MINTYPE} {
+        send/$FCGI_UNKNOWN_TYPE $sock $type
+        continue
+      }
+
+      puts "DEBUG: fcgi::recv $sock#$id $type bytes $contentLength"
+
+      if {$type==$FCGI_STDIN && $contentLength == 0} {
+
+        #XXX: [config $sock response] $sock $id
+
+        upvar $idvar ID
+	set ID $id  
+
+	return 1 
+      }
+
+      recv/$type $sock $id $contentData $contentLength
+
+    }
+
+    return 0
   }
 
   proc destroy {sock} {
@@ -106,15 +141,23 @@ namespace eval fcgi {
     flush $sock
   }
 
-  proc send/$FCGI_UNKNOWN_TYPE {sock id type} {
+  proc send/$FCGI_UNKNOWN_TYPE {sock type} {
     variable FCGI_UNKNOWN_TYPE
+    variable FCGI_NULL_REQUEST_ID
+
 
     puts "DEBUG: FCGI_UNKNOWN_TYPE = $type"
     set data [binary format {cu a7} $type ""]
-    send $sock $id $FCGI_UNKNOWN_TYPE
+
+    send $sock $FCGI_NULL_REQUEST_ID $data
+
+    return 
   }
 
-  proc recv {sock} {
+  proc recv {sock recordvar} {
+    upvar $recordvar record
+    set record ""
+
     set bytes [read $sock 8]
 
     if {[eof $sock]} {
@@ -130,16 +173,10 @@ namespace eval fcgi {
 
     puts "DEBUG: recv $version $type $id $contentLength $paddingLength"
 
-    variable FCGI_MAXTYPE
-    variable FCGI_MINTYPE
-    if {$type > $FCGI_MAXTYPE || $type < $FCGI_MINTYPE} {
-      send $sock UNKNOWN_TYPE $id $type
-      return 1
-    }
-
-    recv/$type $sock $id $contentData $contentLength
+    set record [list $version $type $id $contentData $contentLength]
 
     return 1
+
   }
 
   proc data2dict {data} {
@@ -222,7 +259,11 @@ namespace eval fcgi {
   }
 
 
-  proc recv/$FCGI_PARAMS {sock id data args} {
+  proc recv/$FCGI_PARAMS {sock id data size} {
+    if {$size==0} {
+      return
+    }
+
     dict for {name value} [data2dict $data] {
       puts "DEBUG: PARARM $name = $value"
     }
@@ -232,9 +273,9 @@ namespace eval fcgi {
   proc recv/$FCGI_STDIN {sock id data size} {
     puts "DEBUG: STDIN  = $data"
 
-    if {$size == 0} {
-      [config $sock response] $sock $id $data
-    }
+    #-- if {$size == 0} {
+    #--   [config $sock response] $sock $id $data
+    #-- }
   }
 
   proc recv/$FCGI_DATA {sock id data size} {
@@ -255,6 +296,10 @@ namespace eval fcgi {
 
 
   proc recv/$FCGI_GET_VALUES {sock id data args} {
+    variable FCGI_NULL_REQUEST_ID
+
+    # assert $id==$FCGI_NULL_REQUEST_ID
+
     variable config
 
     set query [data2dict $data]
@@ -270,6 +315,7 @@ namespace eval fcgi {
     
     # dict2data $result 
     # send ...
+    # TODO:
   }
 
 }
@@ -279,8 +325,10 @@ return
 FastCGI Record Type
 -------------------
 
-  * A discrete record: contains a meaningful unit of data all by itself.
-  * A stream record: zero or more non-empty record (length!=0), plus an empty record (length=0).
+  * Management Record:  ID = 0, also called the null request ID.
+  * Application Record: ID > 0
+  * Discrete Record: contains a meaningful unit of data all by itself.
+  * Stream Record: zero or more non-empty record (length!=0), plus an empty record (length=0).
 
 
   * FCGI_MAX_CONNS: maximum number of concurrent transport connections, e.g. "1" or "10".
