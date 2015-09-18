@@ -5,8 +5,18 @@
 # SCGI: A Simple Common Gateway Interface alternative                  #
 #======================================================================#
 
+package provide scgi 0.1
+
+
 namespace eval scgi {
   variable config [dict create]
+
+  proc reset {} {
+    variable config
+
+    dict set config SCRIPT_FILENAME ""
+    dict set config respond         ""
+  }
 
   proc @ {args} { }
 
@@ -132,6 +142,8 @@ namespace eval scgi {
 
 }
 
+scgi::reset
+
 proc scgi::listen {port} {
 
   if {[config "respond"] ne ""} {
@@ -150,7 +162,7 @@ proc scgi::listen {port} {
 }
 
 
-if {[file normalize $::argv0] ne [file normalize [info script]]} {
+if {![info exist ::argv0] || [file normalize $::argv0] ne [file normalize [info script]]} {
   return
 }
 
