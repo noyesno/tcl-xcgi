@@ -10,12 +10,20 @@ package provide scgi 0.1
 
 namespace eval scgi {
   variable config [dict create]
+  
+  proc log {level args} {
+    # TODO: check level
+    set datetime [clock format [clock seconds] -format  "%Y%m%d %T %z"]
+    puts [format "%s # %s: %s" $datetime $level [uplevel ::subst [concat $args]]]
+  }
 
   proc reset {} {
     variable config
 
     dict set config SCRIPT_FILENAME ""
     dict set config respond         ""
+    dict set config max_body_size   [expr "1024*1024*10"]  ;# 10M 
+    dict set config max_head_size   4096                   ;# 4K
   }
 
   proc @ {args} { }
@@ -57,15 +65,21 @@ namespace eval scgi {
     #-- upvar $headvar header
     #-- upvar $bodyvar body
 
-    fconfigure $sock -translation binary 
+    fconfigure $sock -translation binary -encoding binary
 
     fconfigure $sock -blocking    0
-    set buffer [read $sock 1024]
+    set buffer [read $sock 1024]     ;# header length should not > 1024
     fconfigure $sock -blocking 1
     set idx [string first ":" $buffer]
 
     set header_length [string range $buffer 0 $idx-1]
     set header_read   [expr {[string length $buffer] - $idx - 1}]
+
+    # check header length
+    if {$header_length > [config max_head_size]} {
+      puts "alert: max_head_size check fail # $header_length > [config max_head_size]"
+      close $sock
+    } 
 
     #  include the trailing char ','
     if {$header_read <= $header_length} {
@@ -78,6 +92,7 @@ namespace eval scgi {
     foreach {name value} [split [string range $buffer $idx $idx+$header_length] "\0"] {
       if {$name eq ","} break
 
+      log debug "$name = $value"
       dict set header $name $value
     }
 
@@ -90,11 +105,21 @@ namespace eval scgi {
     set body_length [dict get $header CONTENT_LENGTH]
     set body_read   [string length $buffer]
 
+    if {$body_length > [config max_body_size]} {
+      puts "alert: max_body_size check fail # $body_length > [config max_body_size]"
+      close $sock
+    }
+
     if {$body_read < $body_length} {
       append buffer [read $sock [expr {$body_length - $body_read}]]
     }
 
     set body $buffer
+
+    set request_uri [dict get $header REQUEST_URI]
+    log debug "request = $request_uri + [string length $body]"
+    log debug {body = $body}
+
 
     set respond [config respond]
 
@@ -104,6 +129,7 @@ namespace eval scgi {
       source [config SCRIPT_FILENAME] 
     }
 
+    log debug "close sock $sock after scgi reply"
     close $sock
 
     return 1
@@ -116,7 +142,7 @@ namespace eval scgi {
     append buffer "SCGI"           "1"
 
     dict foreach {name value} $header {
-      append buffer $name "\0" $valuue "\0"
+      append buffer $name "\0" $value "\0"
     }
 
 
